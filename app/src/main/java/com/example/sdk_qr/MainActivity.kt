@@ -22,6 +22,7 @@ import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.multi.qrcode.QRCodeMultiReader
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
@@ -113,24 +114,40 @@ class MainActivity : AppCompatActivity() {
 
         cameraControl = camera.cameraControl
 
-        imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), QRCodeAnalyzer())
+        imageAnalysis.setAnalyzer(Executors.newSingleThreadExecutor(), QRCodeAnalyzer())
         preview.setSurfaceProvider(previewView.surfaceProvider)
     }
 
     inner class QRCodeAnalyzer : ImageAnalysis.Analyzer {
         override fun analyze(image: ImageProxy) {
-            val buffer: ByteBuffer = image.planes[0].buffer
-            val data = ByteArray(buffer.capacity())
-            buffer.get(data)
-            val intData = byteArrayToIntArray(data)
-
-            val width = image.width
-            val height = image.height
-            val source: LuminanceSource = RGBLuminanceSource(width, height, intData)
-            val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+            val yBuffer = image.planes[0].buffer // Y plane
+            val yData = ByteArray(yBuffer.capacity())
+            yBuffer.get(yData)
 
             try {
-                val result: Result = QRCodeMultiReader().decode(binaryBitmap)
+                // Scale the image to a smaller size if necessary (optional step)
+                val width = image.width
+                val height = image.height
+
+                // Handle YUV image data using PlanarYUVLuminanceSource
+                val source = PlanarYUVLuminanceSource(
+                    yData,
+                    width, height,
+                    0, 0,  // Crop the full image
+                    width, height,
+                    false  // No need to reverse horizontally
+                )
+                val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+
+                // Prepare decoding hints
+                val hints = mapOf(
+                    DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                    DecodeHintType.TRY_HARDER to true
+                )
+
+                val multiFormatReader = QRCodeMultiReader()
+                val result: Result = multiFormatReader.decode(binaryBitmap, hints) // Pass hints
+
                 val qrCodeText: String = result.text
                 Log.d("QRCodeAnalyzer", "QR Code detected: $qrCodeText")
 
@@ -142,11 +159,18 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { drawBoundingBox() }
 
                 redirectToUrl(qrCodeText) // Handle redirection here
-            } catch (e: Exception) {
-                // No QR code detected
-            }
 
-            image.close()
+            } catch (e: NotFoundException) {
+                Log.d("QRCodeAnalyzer", "QR Code not found")
+            } catch (e: ChecksumException) {
+                Log.e("QRCodeAnalyzer", "Checksum error decoding QR code", e)
+            } catch (e: FormatException) {
+                Log.e("QRCodeAnalyzer", "Format error decoding QR code", e)
+            } catch (e: Exception) {
+                Log.e("QRCodeAnalyzer", "Unknown error decoding QR code", e)
+            } finally {
+                image.close()
+            }
         }
 
         private fun redirectToUrl(url: String) {
@@ -154,11 +178,8 @@ class MainActivity : AppCompatActivity() {
             browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(browserIntent)
         }
-
-        private fun byteArrayToIntArray(byteArray: ByteArray): IntArray {
-            return byteArray.map { it.toInt() and 0xFF }.toIntArray()
-        }
     }
+
 
     private fun drawBoundingBox() {
         val box = FrameLayout(this)
