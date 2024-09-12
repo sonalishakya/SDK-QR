@@ -1,17 +1,21 @@
 package com.example.sdk_qr
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Vibrator
 import android.util.Log
-import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.Toast
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -20,7 +24,6 @@ import androidx.core.content.ContextCompat
 import com.google.zxing.*
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.multi.qrcode.QRCodeMultiReader
-import java.nio.ByteBuffer
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 
@@ -33,6 +36,8 @@ class MainActivity : AppCompatActivity() {
     private var isFlashOn = false
     private lateinit var cameraControl: CameraControl
     private lateinit var frameLayout: FrameLayout
+    private var zoomLevel = 0.0f
+    private var hasVibrated = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,7 +61,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         zoomButton.setOnClickListener {
-            cameraControl.setLinearZoom(0.5f) // Zoom to 50%
+            zoomLevel = if (zoomLevel == 0.0f) {
+                0.5f
+            } else {
+                0.0f
+            }
+            cameraControl.setLinearZoom(zoomLevel)
         }
 
         galleryButton.setOnClickListener {
@@ -66,14 +76,73 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startCamera()
-            } else {
-                Toast.makeText(this, "Camera permission is required.", Toast.LENGTH_SHORT).show()
+    @Deprecated("Deprecated in Java")
+    @RequiresApi(Build.VERSION_CODES.P)
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == GALLERY_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
+            val selectedImageUri: Uri? = data.data
+            if (selectedImageUri != null) {
+                try {
+                    // Get the bitmap from the selected image
+                    val bitmap = loadBitmapFromUri(selectedImageUri)
+
+                    // Pass the bitmap to the QR code scanning function
+                    bitmap?.let {
+                        scanQRCodeFromBitmap(it)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    Toast.makeText(this, "Failed to load image", Toast.LENGTH_SHORT).show()
+                }
             }
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun loadBitmapFromUri(uri: Uri): Bitmap? {
+        // Load the bitmap from the content resolver
+        val source = ImageDecoder.createSource(this.contentResolver, uri)
+        val originalBitmap = ImageDecoder.decodeBitmap(source)
+
+        // Check if the bitmap uses Config.HARDWARE and copy it to a mutable bitmap
+        return if (originalBitmap.config == Bitmap.Config.HARDWARE) {
+            originalBitmap.copy(Bitmap.Config.ARGB_8888, true) // Copy to ARGB_8888
+        } else {
+            originalBitmap
+        }
+    }
+
+    private fun scanQRCodeFromBitmap(bitmap: Bitmap) {
+        // Convert the bitmap to an array of pixels
+        val intArray = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(intArray, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+
+        // Create a luminance source for the QR code
+        val source: LuminanceSource = RGBLuminanceSource(bitmap.width, bitmap.height, intArray)
+        val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+
+        try {
+            // Decode the QR code
+            val result: Result = QRCodeMultiReader().decode(binaryBitmap)
+            val qrCodeText: String = result.text
+            Log.d("QRCodeAnalyzer", "QR Code detected: $qrCodeText")
+
+            // Handle the detected QR code (e.g., redirect or perform some action)
+            redirectToUrl(qrCodeText)
+
+        } catch (e: Exception) {
+            Log.e("QRCodeAnalyzer", "Error decoding QR Code", e)
+        }
+    }
+
+    private fun redirectToUrl(url: String) {
+        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            startActivity(browserIntent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "No app can handle this URL", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -125,7 +194,7 @@ class MainActivity : AppCompatActivity() {
             yBuffer.get(yData)
 
             try {
-                // Scale the image to a smaller size if necessary (optional step)
+                // Capture the image dimensions
                 val width = image.width
                 val height = image.height
 
@@ -151,24 +220,33 @@ class MainActivity : AppCompatActivity() {
                 val qrCodeText: String = result.text
                 Log.d("QRCodeAnalyzer", "QR Code detected: $qrCodeText")
 
-                // Vibrate on QR detection
-                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                vibrator.vibrate(200)
+                if (!hasVibrated) {
+                    try {
+                        val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                        vibrator.vibrate(200)
+                        hasVibrated = true // Set flag to prevent further vibration
+                    } catch (e: Exception) {
+                        Log.d("HapticHandling", "Vibration failed")
+                    }
+                }
 
-                // Draw a box around the QR code
-                runOnUiThread { drawBoundingBox() }
-
-                redirectToUrl(qrCodeText) // Handle redirection here
+                // Redirect to the URL or handle the QR code text
+                redirectToUrl(qrCodeText)
 
             } catch (e: NotFoundException) {
-                Log.d("QRCodeAnalyzer", "QR Code not found")
+                // QR code not found in this frame, continue scanning
+                Log.e("QRCodeAnalyzer", "QR Code not found in image")
             } catch (e: ChecksumException) {
+                // QR code detected but there was a checksum error
                 Log.e("QRCodeAnalyzer", "Checksum error decoding QR code", e)
             } catch (e: FormatException) {
+                // The format of the QR code could not be parsed
                 Log.e("QRCodeAnalyzer", "Format error decoding QR code", e)
             } catch (e: Exception) {
+                // Catch any other unexpected exceptions
                 Log.e("QRCodeAnalyzer", "Unknown error decoding QR code", e)
             } finally {
+                // Always close the image when done
                 image.close()
             }
         }
@@ -176,21 +254,12 @@ class MainActivity : AppCompatActivity() {
         private fun redirectToUrl(url: String) {
             val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
             browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(browserIntent)
+            try {
+                startActivity(browserIntent)
+            } catch (e: ActivityNotFoundException) {
+                Toast.makeText(this@MainActivity, "No app can handle this URL", Toast.LENGTH_SHORT).show()
+            }
         }
-    }
-
-
-    private fun drawBoundingBox() {
-        val box = FrameLayout(this)
-        val layoutParams = FrameLayout.LayoutParams(400, 400) // Size of the bounding box
-        layoutParams.leftMargin = (previewView.width / 2) - 200
-        layoutParams.topMargin = (previewView.height / 2) - 200
-        box.layoutParams = layoutParams
-        box.setBackgroundResource(R.drawable.bounding_box) // Create a drawable resource for the box
-
-        frameLayout.removeAllViews()
-        frameLayout.addView(box)
     }
 
     companion object {
