@@ -234,19 +234,14 @@ class MainActivity : AppCompatActivity() {
                 redirectToUrl(qrCodeText)
 
             } catch (e: NotFoundException) {
-                // QR code not found in this frame, continue scanning
                 Log.e("QRCodeAnalyzer", "QR Code not found in image")
             } catch (e: ChecksumException) {
-                // QR code detected but there was a checksum error
                 Log.e("QRCodeAnalyzer", "Checksum error decoding QR code", e)
             } catch (e: FormatException) {
-                // The format of the QR code could not be parsed
                 Log.e("QRCodeAnalyzer", "Format error decoding QR code", e)
             } catch (e: Exception) {
-                // Catch any other unexpected exceptions
                 Log.e("QRCodeAnalyzer", "Unknown error decoding QR code", e)
             } finally {
-                // Always close the image when done
                 image.close()
             }
         }
